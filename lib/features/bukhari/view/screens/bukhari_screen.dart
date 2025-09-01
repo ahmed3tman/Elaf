@@ -103,11 +103,11 @@ class _BukhariScreenState extends State<BukhariScreen> {
                       children: [
                         // Categories horizontal chips
                         SizedBox(
-                          height: 56,
+                          height: 45,
                           child: ListView.separated(
                             padding: const EdgeInsets.symmetric(
                               horizontal: 12,
-                              vertical: 8,
+                              // vertical: 1,
                             ),
                             scrollDirection: Axis.horizontal,
                             itemCount: chapters.length + 1, // + 'الكل'

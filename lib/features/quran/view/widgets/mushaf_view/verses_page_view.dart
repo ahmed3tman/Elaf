@@ -4,7 +4,7 @@ import 'package:jalees/core/utils/quran_verse_numbers.dart';
 import 'package:jalees/core/theme/app_fonts.dart';
 
 /// Page view that shows pages of verses. Expects pages as a list of verse lists.
-class VersesPageView extends StatelessWidget {
+class VersesPageView extends StatefulWidget {
   final List<List<QuranVerse>> pages;
   final PageController controller;
   final ValueChanged<int> onPageChanged;
@@ -200,11 +200,99 @@ class VersesPageView extends StatelessWidget {
   });
 
   @override
+  State<VersesPageView> createState() => _VersesPageViewState();
+}
+
+class _VersesPageViewState extends State<VersesPageView> {
+  @override
+  void initState() {
+    super.initState();
+    // Prewarm sizing cache for initial page and neighbors after first frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _prewarmAroundIndex(_currentInitialPage());
+    });
+  }
+
+  int _currentInitialPage() {
+    try {
+      if (widget.controller.hasClients && widget.controller.page != null) {
+        return widget.controller.page!.round();
+      }
+      return widget.controller.initialPage;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  void _prewarmAroundIndex(int index) {
+    if (!mounted) return;
+    final media = MediaQuery.of(context);
+    final horizontalPadding = 4.0;
+    final availableWidth = media.size.width - horizontalPadding * 2;
+
+    void prewarmFor(int pageIndex) {
+      if (pageIndex < 0 || pageIndex >= widget.pages.length) return;
+      final page = widget.pages[pageIndex];
+
+      // Determine header/surah context same as in build
+      final headerStartSurahId =
+          (widget.pageStartSurahIds != null &&
+              pageIndex < widget.pageStartSurahIds!.length)
+          ? widget.pageStartSurahIds![pageIndex]
+          : null;
+
+      bool pageHasBasmalahAtTop = false;
+      if (headerStartSurahId != null) {
+        const basmalahText = 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ';
+        pageHasBasmalahAtTop =
+            page.isNotEmpty &&
+            (page.first.id == 0 || page.first.text.trim() == basmalahText);
+      }
+
+      final bool isBasmalahAllowedForSurah =
+          headerStartSurahId != null &&
+          headerStartSurahId != 1 &&
+          headerStartSurahId != 9;
+
+      final headerLines = (headerStartSurahId != null)
+          ? ((pageHasBasmalahAtTop || !isBasmalahAllowedForSurah) ? 1 : 2)
+          : 0;
+      final availableLinesForVerses = 15 - headerLines;
+
+      final bool isFatihaFirstPage = headerStartSurahId == 1;
+      final bool isBaqarahFirstPage = headerStartSurahId == 2;
+
+      // Prewarm the cache for this page configuration
+      VersesPageView.prewarmSizingCache(
+        context: context,
+        pages: widget.pages,
+        pageIndex: pageIndex,
+        availableWidth: availableWidth,
+        availableLinesForVerses: availableLinesForVerses,
+        headerLines: headerLines,
+        isFatihaFirstPage: isFatihaFirstPage,
+        isBaqarahFirstPage: isBaqarahFirstPage,
+        isBasmalahAllowedForSurah: isBasmalahAllowedForSurah,
+        pageHasBasmalahAtTop: pageHasBasmalahAtTop,
+      );
+    }
+
+    // Prewarm current, previous, next and one more ahead
+    for (final i in <int>{index - 1, index, index + 1, index + 2}) {
+      prewarmFor(i);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return PageView.builder(
-      controller: controller,
-      itemCount: pages.length,
-      onPageChanged: onPageChanged,
+      controller: widget.controller,
+      itemCount: widget.pages.length,
+      onPageChanged: (i) {
+        // Prewarm neighbors for smoother next swipes, then forward the event.
+        _prewarmAroundIndex(i);
+        widget.onPageChanged(i);
+      },
       physics: const PageScrollPhysics(),
       allowImplicitScrolling: true,
       // Preload adjacent pages to reduce perceived latency when swiping.
@@ -218,44 +306,131 @@ class VersesPageView extends StatelessWidget {
         // 4. If it uses fewer than 15 lines, append blank lines to reach 15.
         // 5. Finally render the RichText with WidgetSpans for decorative verse numbers using the computed font size.
 
-        final page = pages[pageIndex];
+        final page = widget.pages[pageIndex];
         final horizontalPadding = 4.0; // matches container padding below
         final availableWidth =
             MediaQuery.of(context).size.width - horizontalPadding * 2;
 
-        // Build plain text used for measurement for verses only (exclude header lines)
-        // Skip top basmalah in measurement for Surah Al-Fatiha (1) and At-Tawbah (9)
-        // to keep measurement consistent with rendering.
-        final headerStartSurahIdForMeasure =
-            (pageStartSurahIds != null && pageIndex < pageStartSurahIds!.length)
-            ? pageStartSurahIds![pageIndex]
+        // Build plain text for measurement including inline SURAH headers and basmalah
+        // so the total fits exactly 15 visual lines. The surah name header is inserted
+        // at the exact boundary (before basmalah or before verse 1 if no basmalah).
+        final int? initialSurahId =
+            (widget.pageStartSurahIds != null &&
+                pageIndex < widget.pageStartSurahIds!.length)
+            ? widget.pageStartSurahIds![pageIndex]
             : null;
-        final bool isBasmalahAllowedForSurahForMeasure =
-            headerStartSurahIdForMeasure != null &&
-            headerStartSurahIdForMeasure != 1 &&
-            headerStartSurahIdForMeasure != 9;
-
         String buildVersesMeasurementText(double fontSize) {
           final sb = StringBuffer();
-          // Use hair space (U+200A) as a very small symmetric space around numbers
           const String hairSpace = '\u200A';
+          int? currentSurahId = initialSurahId;
+          // Helper to get surah name by id
+          String? surahName(int? id) {
+            if (id == null || widget.allSurahs == null) return null;
+            final s = widget.allSurahs!.firstWhere(
+              (e) => e.id == id,
+              orElse: () => QuranSurah(
+                id: -1,
+                name: '',
+                transliteration: '',
+                type: '',
+                totalVerses: 0,
+                verses: const [],
+              ),
+            );
+            return s.id == -1 ? null : s.name;
+          }
+
+          int? inferSurahIdFromFirstVerse(String verse1Text) {
+            if (widget.allSurahs == null) return null;
+            final t = verse1Text.trim();
+            for (final s in widget.allSurahs!) {
+              final v1 = s.verses.where((v) => v.id == 1).toList();
+              if (v1.isNotEmpty && v1.first.text.trim() == t) {
+                return s.id;
+              }
+            }
+            return null;
+          }
+
           for (int i = 0; i < page.length; i++) {
             final verse = page[i];
-            if (verse.id == 0) {
-              if (i == 0 && !isBasmalahAllowedForSurahForMeasure) {
-                // skip measuring basmalah at top for surahs without header basmalah
+
+            // Insert header at page start if it begins with new surah (basmalah or verse 1)
+            if (i == 0 && (verse.id == 1 || verse.id == 0)) {
+              // Use the page's starting surah id; if missing and verse is 1, infer by matching text
+              int? surahIdForHeader = currentSurahId;
+              if (surahIdForHeader == null && verse.id == 1) {
+                surahIdForHeader = inferSurahIdFromFirstVerse(verse.text);
+              }
+              final name = surahName(surahIdForHeader);
+              if (name != null && name.isNotEmpty) {
+                sb.writeln(name);
+              }
+              // If it's basmalah at start, include basmalah for this surah (except 1 and 9) and do not advance id
+              if (verse.id == 0) {
+                if (surahIdForHeader != 1 && surahIdForHeader != 9) {
+                  sb.writeln(verse.text);
+                }
+                // keep currentSurahId as surahIdForHeader
+                currentSurahId = surahIdForHeader;
                 continue;
               }
-              // basmalah as its own line in verses area
-              sb.writeln(verse.text);
-            } else {
-              sb.write(verse.text);
-              sb.write(hairSpace);
-              sb.write(
-                QuranVerseNumbers.convertToArabicNumerals(verse.id.toString()),
-              );
-              sb.write(hairSpace);
+              // If page starts directly with verse 1, still show basmala for eligible surahs
+              if (verse.id == 1 &&
+                  surahIdForHeader != null &&
+                  surahIdForHeader != 1 &&
+                  surahIdForHeader != 9) {
+                const basmalahText = 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ';
+                sb.writeln(basmalahText);
+              }
+              currentSurahId = surahIdForHeader;
             }
+
+            if (i > 0 && verse.id == 0) {
+              // Internal basmalah => next surah starts now. Determine the next surah id.
+              int? nextSurahId = (currentSurahId != null)
+                  ? currentSurahId + 1
+                  : null;
+              // If unknown, infer from the next verse text when available
+              if (nextSurahId == null && i + 1 < page.length) {
+                nextSurahId = inferSurahIdFromFirstVerse(page[i + 1].text);
+              }
+              final name = surahName(nextSurahId);
+              if (name != null && name.isNotEmpty) {
+                sb.writeln(name);
+              }
+              if (nextSurahId != 1 && nextSurahId != 9) {
+                sb.writeln(verse.text);
+              }
+              currentSurahId = nextSurahId;
+              continue;
+            }
+
+            // New surah without basmalah (e.g., Surah 9) appearing mid-page
+            if (i > 0 && verse.id == 1 && page[i - 1].id != 0) {
+              int? surahId = inferSurahIdFromFirstVerse(verse.text);
+              if (surahId == null) {
+                surahId = (currentSurahId != null) ? currentSurahId + 1 : null;
+              }
+              final name = surahName(surahId);
+              if (name != null && name.isNotEmpty) {
+                sb.writeln(name);
+              }
+              // Add basmala for eligible surahs
+              if (surahId != null && surahId != 1 && surahId != 9) {
+                const basmalahText = 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ';
+                sb.writeln(basmalahText);
+              }
+              currentSurahId = surahId;
+            }
+
+            // Append verse text and number
+            sb.write(verse.text);
+            sb.write(hairSpace);
+            sb.write(
+              QuranVerseNumbers.convertToArabicNumerals(verse.id.toString()),
+            );
+            sb.write(hairSpace);
           }
           return sb.toString();
         }
@@ -273,11 +448,8 @@ class VersesPageView extends StatelessWidget {
         }
 
         // Decide if this page is Surah Al-Fatiha (1) or the FIRST page of Al-Baqarah (2)
-        // We can check using pageStartSurahIds which is only non-null on the first page of a surah.
-        final headerStartSurahIdForSizing =
-            (pageStartSurahIds != null && pageIndex < pageStartSurahIds!.length)
-            ? pageStartSurahIds![pageIndex]
-            : null;
+        // based on the surah id at the first verse on this page.
+        final headerStartSurahIdForSizing = initialSurahId;
         final bool isFatihaFirstPage = headerStartSurahIdForSizing == 1;
         final bool isBaqarahFirstPage = headerStartSurahIdForSizing == 2;
         final bool useSlightlySmallerFont =
@@ -308,36 +480,88 @@ class VersesPageView extends StatelessWidget {
           wordSpacing: computedWordSpacing,
         );
 
-        // Determine header lines count (surah name always 1 line when present, basmalah 1 line unless already present as first verse)
-        final headerStartSurahId =
-            (pageStartSurahIds != null && pageIndex < pageStartSurahIds!.length)
-            ? pageStartSurahIds![pageIndex]
-            : null;
-        bool pageHasBasmalahAtTop = false;
-        if (headerStartSurahId != null) {
-          const basmalahText = 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ';
-          pageHasBasmalahAtTop =
-              page.isNotEmpty &&
-              (page.first.id == 0 || page.first.text.trim() == basmalahText);
-        }
-        // Basmalah should be shown for all surahs except Al-Fatiha (1) and At-Tawbah (9)
-        final bool isBasmalahAllowedForSurah =
-            headerStartSurahId != null &&
-            headerStartSurahId != 1 &&
-            headerStartSurahId != 9;
+        // Calculate inline headers: count surah names and basmalah that will appear
+        int inlineHeaderLines = 0;
+        int? currentSurahForCount = initialSurahId;
 
-        final headerLines = (headerStartSurahId != null)
-            ? ((pageHasBasmalahAtTop || !isBasmalahAllowedForSurah) ? 1 : 2)
-            : 0;
-        final availableLinesForVerses = 15 - headerLines;
+        // Count headers at page start
+        if (page.isNotEmpty && (page.first.id == 1 || page.first.id == 0)) {
+          int? surahIdForHeader = currentSurahForCount;
+          if (surahIdForHeader == null && page.first.id == 1) {
+            final matchingSurah = widget.allSurahs?.firstWhere(
+              (s) => s.verses.any(
+                (v) => v.id == 1 && v.text.trim() == page.first.text.trim(),
+              ),
+              orElse: () => QuranSurah(
+                id: -1,
+                name: '',
+                transliteration: '',
+                type: '',
+                totalVerses: 0,
+                verses: [],
+              ),
+            );
+            surahIdForHeader = (matchingSurah?.id == -1)
+                ? null
+                : matchingSurah?.id;
+          }
+          if (surahIdForHeader != null) {
+            inlineHeaderLines++; // surah name line
+            if (page.first.id == 0) {
+              // basmalah at start
+              if (surahIdForHeader != 1 && surahIdForHeader != 9) {
+                inlineHeaderLines++; // basmalah line
+              }
+            } else if (page.first.id == 1 &&
+                surahIdForHeader != 1 &&
+                surahIdForHeader != 9) {
+              // verse 1 at start, add basmalah
+              inlineHeaderLines++; // basmalah line
+            }
+          }
+          currentSurahForCount = surahIdForHeader;
+        }
+
+        // Count mid-page headers
+        for (int i = 1; i < page.length; i++) {
+          final verse = page[i];
+          if (verse.id == 0) {
+            // Internal basmalah => next surah
+            int? nextSurahId = (currentSurahForCount != null)
+                ? currentSurahForCount + 1
+                : null;
+            if (nextSurahId != null) {
+              inlineHeaderLines++; // surah name line
+              if (nextSurahId != 1 && nextSurahId != 9) {
+                inlineHeaderLines++; // basmalah line
+              }
+              currentSurahForCount = nextSurahId;
+            }
+          } else if (verse.id == 1 && page[i - 1].id != 0) {
+            // New surah without basmalah (e.g., Surah 9)
+            int? surahId = currentSurahForCount != null
+                ? currentSurahForCount + 1
+                : null;
+            if (surahId != null) {
+              inlineHeaderLines++; // surah name line
+              if (surahId != 1 && surahId != 9) {
+                inlineHeaderLines++; // basmalah line
+              }
+              currentSurahForCount = surahId;
+            }
+          }
+        }
+
+        // Available lines for verse text = 15 - inline headers
+        final availableLinesForVerses = (15 - inlineHeaderLines).clamp(1, 15);
 
         // Measure verses only and fit them into availableLinesForVerses.
         // Try cache first to skip heavy measuring where possible.
         final String cacheKey =
-            '$pageIndex:${availableWidth.round()}:$availableLinesForVerses:$headerLines:${Theme.of(context).brightness}';
+            '$pageIndex:${availableWidth.round()}:$availableLinesForVerses:${Theme.of(context).brightness}';
         String measureText = buildVersesMeasurementText(computedFontSize);
         int lines = measureLineCount(measureText, baseStyle);
-        final _CachedSizing? cached = _sizingCache[cacheKey];
+        final _CachedSizing? cached = VersesPageView._sizingCache[cacheKey];
         if (cached != null) {
           computedFontSize = cached.fontSize;
           computedWordSpacing = cached.wordSpacing;
@@ -460,41 +684,72 @@ class VersesPageView extends StatelessWidget {
         }
 
         // Store sizing in cache for this configuration to speed up future builds.
-        _sizingCache[cacheKey] = _CachedSizing(
+        VersesPageView._sizingCache[cacheKey] = _CachedSizing(
           fontSize: computedFontSize,
           wordSpacing: computedWordSpacing,
           letterSpacing: computedLetterSpacing,
         );
 
-        // Now build header section and body widgets separately.
+        // Build BODY widgets with inline surah headers and basmalah
         final List<Widget> bodyWidgets = [];
-        final List<InlineSpan> verseSpans = [];
+        final List<InlineSpan> verseChunk = [];
 
-        Widget? headerSection;
-        if (headerStartSurahId != null && allSurahs != null) {
-          final surah = allSurahs!.firstWhere(
-            (s) => s.id == headerStartSurahId,
+        int? currentSurahId = initialSurahId;
+
+        void flushChunk() {
+          if (verseChunk.isEmpty) return;
+          final bool shouldCenterText = isFatihaFirstPage || isBaqarahFirstPage;
+          bodyWidgets.add(
+            Directionality(
+              textDirection: TextDirection.rtl,
+              child: RichText(
+                textAlign: shouldCenterText
+                    ? TextAlign.center
+                    : TextAlign.justify,
+                textWidthBasis: TextWidthBasis.parent,
+                text: TextSpan(style: baseStyle, children: [...verseChunk]),
+              ),
+            ),
+          );
+          verseChunk.clear();
+        }
+
+        int? inferSurahIdFromFirstVerse(String verse1Text) {
+          if (widget.allSurahs == null) return null;
+          final t = verse1Text.trim();
+          for (final s in widget.allSurahs!) {
+            final v1 = s.verses.where((v) => v.id == 1).toList();
+            if (v1.isNotEmpty && v1.first.text.trim() == t) {
+              return s.id;
+            }
+          }
+          return null;
+        }
+
+        Widget surahHeaderDecorated(int surahId) {
+          final s = widget.allSurahs?.firstWhere(
+            (e) => e.id == surahId,
             orElse: () => QuranSurah(
               id: -1,
               name: '',
               transliteration: '',
               type: '',
               totalVerses: 0,
-              verses: [],
+              verses: const [],
             ),
           );
-          if (surah.id != -1) {
-            // Decorative framed header (compact vertical padding to keep heights predictable)
-            headerSection = Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
+          final display = (s == null || s.id == -1) ? '' : s.name;
+          return Directionality(
+            textDirection: TextDirection.rtl,
+            child: SizedBox(
+              height: computedFontSize * 1.0, // adjusted later to 1 line
+              child: Center(
+                child: Container(
                   width: double.infinity,
                   padding: const EdgeInsets.symmetric(
-                    vertical: 0, // further reduced vertical padding
+                    vertical: 0,
                     horizontal: 12,
                   ),
-                  margin: const EdgeInsets.only(bottom: 0), // remove extra gap
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
                       begin: Alignment.topCenter,
@@ -513,7 +768,6 @@ class VersesPageView extends StatelessWidget {
                     ),
                   ),
                   child: Row(
-                    mainAxisSize: MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Text(
@@ -526,11 +780,10 @@ class VersesPageView extends StatelessWidget {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          surah.name,
+                          display,
                           textAlign: TextAlign.center,
                           style: AppFonts.quranTextStyle(
-                            // Slightly larger surah name in header for better readability
-                            fontSize: computedFontSize + 4,
+                            fontSize: computedFontSize,
                             height: 1.0,
                           ).copyWith(fontWeight: FontWeight.bold),
                           overflow: TextOverflow.ellipsis,
@@ -547,103 +800,158 @@ class VersesPageView extends StatelessWidget {
                     ],
                   ),
                 ),
-                if (!pageHasBasmalahAtTop && isBasmalahAllowedForSurah)
-                  Directionality(
-                    textDirection: TextDirection.rtl,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      child: Text(
-                        'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ',
-                        textAlign: TextAlign.center,
-                        style: AppFonts.basmalahStyle(
-                          color: Theme.of(context).colorScheme.primary,
-                        ).copyWith(fontSize: computedFontSize - 2, height: 1.5),
-                      ),
-                    ),
-                  ),
-              ],
-            );
-          }
-        }
-
-        // build verse spans
-        for (int i = 0; i < page.length; i++) {
-          final verse = page[i];
-          if (verse.id == 0) {
-            // If the page starts with Surah 1 or 9, skip showing basmalah at the top
-            if (i == 0 &&
-                headerStartSurahId != null &&
-                (headerStartSurahId == 1 || headerStartSurahId == 9)) {
-              continue;
-            }
-            // basmalah inside body: allocate a taller slot so it has comfortable
-            // vertical spacing without changing the 15-line counting logic.
-            bodyWidgets.add(
-              Directionality(
-                textDirection: TextDirection.rtl,
-                child: SizedBox(
-                  height:
-                      computedFontSize * 1.5, // allow a bit of inner padding
-                  child: Center(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 2),
-                      child: Text(
-                        verse.text,
-                        textAlign: TextAlign.center,
-                        style: AppFonts.basmalahStyle(
-                          color: Theme.of(context).colorScheme.primary,
-                        ).copyWith(fontSize: computedFontSize - 2),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            );
-          } else {
-            // Add verse text then the number as a TextSpan instead of WidgetSpan.
-            // Wrapping the number with Arabic Letter Mark (U+061C) on both sides
-            // forces correct RTL behavior when multiple numbers share one line.
-            verseSpans.add(TextSpan(text: verse.text));
-            // Wrap number with hair spaces (U+200A) on both sides for balanced spacing
-            final String rtlNumberCore =
-                '\u061C${QuranVerseNumbers.getDecorativeVerseNumber(verse.id)}\u061C';
-            final String rtlNumber = '\u200A' + rtlNumberCore + '\u200A';
-            verseSpans.add(
-              TextSpan(
-                text: rtlNumber,
-                style: AppFonts.verseNumberStyle(
-                  fontSize: computedFontSize + 6,
-                  color: AppFonts.brightGold,
-                ).copyWith(fontFamily: AppFonts.versesFont, height: 1.0),
-              ),
-            );
-            // No extra trailing space; spacing is symmetric now.
-          }
-        }
-
-        // add the combined RichText for verses if any
-        if (verseSpans.isNotEmpty) {
-          // Use center alignment for Surah Al-Fatiha and first page of Al-Baqarah
-          final bool shouldCenterText = isFatihaFirstPage || isBaqarahFirstPage;
-
-          bodyWidgets.add(
-            Directionality(
-              textDirection: TextDirection.rtl,
-              child: RichText(
-                textAlign: shouldCenterText
-                    ? TextAlign.center
-                    : TextAlign.justify,
-                textWidthBasis: TextWidthBasis.parent,
-                text: TextSpan(
-                  // We'll override "height" below based on available page height
-                  // to make the body occupy exactly the remaining space.
-                  style: baseStyle,
-                  children: List<InlineSpan>.from(verseSpans),
-                ),
               ),
             ),
           );
         }
+
+        for (int i = 0; i < page.length; i++) {
+          final verse = page[i];
+
+          // Insert header at page start for new surah
+          if (i == 0 && (verse.id == 1 || verse.id == 0)) {
+            int? surahIdForHeader = currentSurahId;
+            if (surahIdForHeader == null && verse.id == 1) {
+              surahIdForHeader = inferSurahIdFromFirstVerse(verse.text);
+            }
+            if (surahIdForHeader != null) {
+              flushChunk();
+              bodyWidgets.add(surahHeaderDecorated(surahIdForHeader));
+              // If basmalah at start and allowed, show it and keep current surah id
+              if (verse.id == 0 &&
+                  surahIdForHeader != 1 &&
+                  surahIdForHeader != 9) {
+                bodyWidgets.add(
+                  Directionality(
+                    textDirection: TextDirection.rtl,
+                    child: SizedBox(
+                      height: computedFontSize * 1.0,
+                      child: Center(
+                        child: Text(
+                          verse.text,
+                          textAlign: TextAlign.center,
+                          style: AppFonts.basmalahStyle(
+                            color: Theme.of(context).colorScheme.primary,
+                          ).copyWith(fontSize: computedFontSize - 2),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+                currentSurahId = surahIdForHeader;
+                continue; // don't add basmalah again
+              }
+              // If page starts with verse 1, add basmala line for eligible surahs
+              if (verse.id == 1 &&
+                  surahIdForHeader != 1 &&
+                  surahIdForHeader != 9) {
+                bodyWidgets.add(
+                  Directionality(
+                    textDirection: TextDirection.rtl,
+                    child: SizedBox(
+                      height: computedFontSize * 1.0,
+                      child: Center(
+                        child: Text(
+                          'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ',
+                          textAlign: TextAlign.center,
+                          style: AppFonts.basmalahStyle(
+                            color: Theme.of(context).colorScheme.primary,
+                          ).copyWith(fontSize: computedFontSize - 2),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              }
+              currentSurahId = surahIdForHeader;
+            }
+          }
+
+          if (i > 0 && verse.id == 0) {
+            // Internal basmalah => transition to next surah
+            int? nextSurahId = (currentSurahId != null)
+                ? currentSurahId + 1
+                : null;
+            if (nextSurahId == null && i + 1 < page.length) {
+              nextSurahId = inferSurahIdFromFirstVerse(page[i + 1].text);
+            }
+            if (nextSurahId != null) {
+              flushChunk();
+              bodyWidgets.add(surahHeaderDecorated(nextSurahId));
+              if (nextSurahId != 1 && nextSurahId != 9) {
+                bodyWidgets.add(
+                  Directionality(
+                    textDirection: TextDirection.rtl,
+                    child: SizedBox(
+                      height: computedFontSize * 1.0,
+                      child: Center(
+                        child: Text(
+                          verse.text,
+                          textAlign: TextAlign.center,
+                          style: AppFonts.basmalahStyle(
+                            color: Theme.of(context).colorScheme.primary,
+                          ).copyWith(fontSize: computedFontSize - 2),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              }
+              currentSurahId = nextSurahId;
+              continue;
+            }
+          }
+
+          if (i > 0 && verse.id == 1 && page[i - 1].id != 0) {
+            // New surah without basmalah (e.g., Surah 9)
+            int? surahId = inferSurahIdFromFirstVerse(verse.text);
+            if (surahId == null) {
+              surahId = (currentSurahId != null) ? currentSurahId + 1 : null;
+            }
+            if (surahId != null) {
+              flushChunk();
+              bodyWidgets.add(surahHeaderDecorated(surahId));
+              if (surahId != 1 && surahId != 9) {
+                bodyWidgets.add(
+                  Directionality(
+                    textDirection: TextDirection.rtl,
+                    child: SizedBox(
+                      height: computedFontSize * 1.0,
+                      child: Center(
+                        child: Text(
+                          'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ',
+                          textAlign: TextAlign.center,
+                          style: AppFonts.basmalahStyle(
+                            color: Theme.of(context).colorScheme.primary,
+                          ).copyWith(fontSize: computedFontSize - 2),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              }
+              currentSurahId = surahId;
+            }
+          }
+
+          // Append verse text and number to the current chunk
+          verseChunk.add(TextSpan(text: verse.text));
+          final String rtlNumberCore =
+              '\u061C${QuranVerseNumbers.getDecorativeVerseNumber(verse.id)}\u061C';
+          final String rtlNumber = '\u200A' + rtlNumberCore + '\u200A';
+          verseChunk.add(
+            TextSpan(
+              text: rtlNumber,
+              style: AppFonts.verseNumberStyle(
+                fontSize: computedFontSize + 6,
+                color: AppFonts.brightGold,
+              ).copyWith(fontFamily: AppFonts.versesFont, height: 1.0),
+            ),
+          );
+        }
+
+        // Flush remaining verses
+        flushChunk();
 
         // We'll add a pixel-precise spacer later based on the exact remaining height.
 
@@ -657,22 +965,8 @@ class VersesPageView extends StatelessWidget {
           ),
         );
 
-        // Compute precise pixel heights: use computedFontSize and line-height multipliers
+        // Compute precise pixel heights: use computedFontSize and dynamic line height
         final double bodyLineHeightPx = computedFontSize * 1.9;
-        // Account for surah name rendered at (computedFontSize + 4) and add a small safety buffer
-        final double surahHeaderFontSize = computedFontSize + 4;
-        final double surahLineHeightPx = surahHeaderFontSize * 1.25 + 2.0;
-        final double basmalahHeaderLineHeightPx =
-            computedFontSize * 1.6 + 4.0; // account for small vertical padding
-        const double headerBufferPx =
-            6.0; // safety buffer to avoid 1-2px overflow
-        final double headerHeightPx = (headerStartSurahId != null)
-            ? ((pageHasBasmalahAtTop || !isBasmalahAllowedForSurah)
-                  ? (surahLineHeightPx + headerBufferPx)
-                  : (surahLineHeightPx +
-                        basmalahHeaderLineHeightPx +
-                        headerBufferPx))
-            : 0.0;
         final double bodyHeightPx = availableLinesForVerses * bodyLineHeightPx;
 
         // We'll compute the exact body area height and set a dynamic line-height
@@ -683,30 +977,52 @@ class VersesPageView extends StatelessWidget {
         final double mediaTop = MediaQuery.of(context).padding.top;
         // Since we're using SafeArea with bottom: false, we don't subtract bottom padding
         final double availablePageHeight =
-            (pageHeight ?? (MediaQuery.of(context).size.height - mediaTop));
+            (widget.pageHeight ??
+            (MediaQuery.of(context).size.height - mediaTop));
 
         // Build a constrained page layout: fixed header height and an
         // Expanded body that fills remaining availablePageHeight. This
         // prevents vertical overflow by ensuring children cannot exceed
         // the page container's height.
-        final Widget headerWidget = (headerSection != null)
-            ? SizedBox(
-                height: headerHeightPx,
-                child: ClipRect(child: Center(child: headerSection)),
-              )
-            : const SizedBox.shrink();
+        // No separate header widget; headers are inline in bodyWidgets
 
         // Build the body with a LayoutBuilder to know the exact remaining height
         // and then set the TextStyle.height accordingly to fill it.
         final Widget bodyWidget = LayoutBuilder(
           builder: (context, constraints) {
             final double availableBodyHeightPx = constraints.maxHeight;
-            final int desiredLines = availableLinesForVerses;
-            // Dynamic line-height so N lines exactly fill the available body height
+
+            // Count fixed-height elements (surah headers and basmalah lines)
+            int fixedLinesCount = 0;
+            for (final w in bodyWidgets) {
+              if (w is Directionality && w.child is SizedBox) {
+                fixedLinesCount++; // Each SizedBox is one fixed line (surah name or basmalah)
+              }
+            }
+
+            // Calculate available lines for RichText content
+            final int availableLinesForText = (15 - fixedLinesCount).clamp(
+              1,
+              15,
+            );
+
+            // Reserve fixed height for headers/basmalah and use remainder for text
+            final double fixedElementHeight =
+                computedFontSize * 1.2; // height per fixed element
+            final double totalFixedHeight =
+                fixedLinesCount * fixedElementHeight;
+            final double availableTextHeight =
+                availableBodyHeightPx - totalFixedHeight;
+
+            // Dynamic line-height for RichText content only
             final double dynamicLineHeight =
-                (desiredLines > 0 && computedFontSize > 0)
-                ? availableBodyHeightPx / (desiredLines * computedFontSize)
+                availableLinesForText > 0 && computedFontSize > 0
+                ? availableTextHeight /
+                      (availableLinesForText * computedFontSize)
                 : 1.9;
+
+            // Clamp line height to reasonable bounds to maintain readability
+            final double safeLineHeight = dynamicLineHeight.clamp(1.0, 2.8);
 
             // Update styles of the rich text(s) to use the dynamic line height
             final List<Widget> adjusted = [];
@@ -715,7 +1031,7 @@ class VersesPageView extends StatelessWidget {
                 final rich = (w.child as RichText);
                 final ts = rich.text as TextSpan;
                 final updated = TextSpan(
-                  style: ts.style?.copyWith(height: dynamicLineHeight),
+                  style: ts.style?.copyWith(height: safeLineHeight),
                   children: ts.children,
                   text: ts.text,
                 );
@@ -737,13 +1053,13 @@ class VersesPageView extends StatelessWidget {
                   ),
                 );
               } else if (w is Directionality && w.child is SizedBox) {
-                // Basmalah inside the body: make it occupy exactly one line height
+                // Header/basmalah lines: use fixed height (1 line equivalent)
                 final sb = w.child as SizedBox;
                 adjusted.add(
                   Directionality(
                     textDirection: TextDirection.rtl,
                     child: SizedBox(
-                      height: computedFontSize * dynamicLineHeight,
+                      height: fixedElementHeight,
                       child: (sb.child is Center)
                           ? Center(child: (sb.child as Center).child)
                           : sb.child,
@@ -754,8 +1070,6 @@ class VersesPageView extends StatelessWidget {
                 adjusted.add(w);
               }
             }
-
-            // No bottom spacer: the text itself has been expanded to occupy all 15 lines.
 
             return ClipRect(
               child: Align(
@@ -785,7 +1099,6 @@ class VersesPageView extends StatelessWidget {
                     mainAxisSize: MainAxisSize.max,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      if (headerSection != null) headerWidget,
                       // Expanded ensures the body will fit the remaining
                       // vertical space and cannot overflow the page.
                       Expanded(
@@ -802,8 +1115,8 @@ class VersesPageView extends StatelessWidget {
           ),
         );
 
-        // Wrap page in RepaintBoundary to isolate painting and reduce repaints.
-        return RepaintBoundary(child: pageWidget);
+        // Wrap page in KeepAlive + RepaintBoundary to reduce rebuilds and repaints.
+        return _KeepAliveWrap(child: RepaintBoundary(child: pageWidget));
       },
     );
   }
@@ -818,4 +1131,24 @@ class _CachedSizing {
     required this.wordSpacing,
     required this.letterSpacing,
   });
+}
+
+class _KeepAliveWrap extends StatefulWidget {
+  final Widget child;
+  const _KeepAliveWrap({required this.child});
+
+  @override
+  State<_KeepAliveWrap> createState() => _KeepAliveWrapState();
+}
+
+class _KeepAliveWrapState extends State<_KeepAliveWrap>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return widget.child;
+  }
 }

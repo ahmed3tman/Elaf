@@ -3,15 +3,4 @@
     <item>
         <bitmap android:gravity="fill" android:src="@drawable/background"/>
     </item>
-    <item>
-        <inset
-            android:insetLeft="48dp"
-            android:insetRight="48dp"
-            android:insetTop="48dp"
-            android:insetBottom="48dp">
-            <bitmap
-                android:gravity="center"
-                android:src="@drawable/splash"/>
-        </inset>
-    </item>
 </layer-list>
