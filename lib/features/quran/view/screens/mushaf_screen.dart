@@ -1,7 +1,6 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:jalees/core/theme/app_fonts.dart';
-import 'package:flutter/services.dart';
+import 'package:jalees/features/quran/data/page_mapping_repository.dart';
 import '../../model/quran_model.dart';
 import '../../model/mushaf_model.dart';
 import 'package:jalees/features/quran/view/widgets/mushaf_view/widgets.dart'
@@ -29,40 +28,65 @@ class _MushafScreenState extends State<MushafScreen> {
   late Map<int, List<Map<String, dynamic>>> _pageMapping;
   late List<int?> pageStartSurahIds;
   bool _isSaved = false;
+  int? _lastPrewarmCenter;
 
   @override
   void initState() {
     super.initState();
     currentIndex = widget.mushaf.currentSurahIndex;
     currentPageIndex = widget.mushaf.currentPageIndex;
-    pageController = PageController(initialPage: currentPageIndex);
+    pageController = PageController(
+      initialPage: currentPageIndex,
+      viewportFraction: 1.0, // explicit
+    );
     _pageMapping = {};
     pages = [];
     _isSaved =
         widget.mushaf.currentPageIndex == currentPageIndex &&
         widget.mushaf.currentSurahIndex == currentIndex;
-    _loadPageMapping();
+    // If mapping is already cached, build pages immediately to avoid any delay.
+    final cached = PageMappingRepository.cache;
+    if (cached != null && cached.isNotEmpty) {
+      _pageMapping = cached;
+      _buildPagesFromMapping();
+      // clamp current page
+      if (currentPageIndex >= pages.length) {
+        currentPageIndex = pages.isNotEmpty ? pages.length - 1 : 0;
+      }
+      // no setState here; first build will use the prepared data
+      // Also, prewarm in background for neighbors
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        PageMappingRepository.ensureLoaded(); // ensure future stays warm
+      });
+    } else {
+      // Kick off loading in background, but render instantly without spinner.
+      PageMappingRepository.ensureLoaded().then((map) {
+        if (!mounted) return;
+        _pageMapping = map;
+        _buildPagesFromMapping();
+        if (currentPageIndex >= pages.length) {
+          currentPageIndex = pages.isNotEmpty ? pages.length - 1 : 0;
+        }
+        setState(() {});
+      });
+    }
   }
 
   Future<void> _loadPageMapping() async {
     try {
-      final raw = await rootBundle.loadString(
-        'assets/json/quran_page_mapping.json',
-      );
-      final Map<String, dynamic> decoded = jsonDecode(raw);
-      _pageMapping = decoded.map(
-        (k, v) => MapEntry(int.parse(k), List<Map<String, dynamic>>.from(v)),
-      );
+      final parsed = await PageMappingRepository.ensureLoaded();
+      _pageMapping = parsed;
       _buildPagesFromMapping();
-      // ensure currentPageIndex in range
       if (currentPageIndex >= pages.length) {
-        currentPageIndex = pages.length - 1;
+        currentPageIndex = pages.isNotEmpty ? pages.length - 1 : 0;
       }
-      setState(() {});
+      if (mounted) setState(() {});
     } catch (e) {
       debugPrint('Failed to load page mapping: $e');
     }
   }
+
+  // Parsing handled centrally in PageMappingRepository.
 
   void _buildPagesFromMapping() {
     pages = [];
@@ -182,23 +206,158 @@ class _MushafScreenState extends State<MushafScreen> {
         .floor()
         .clamp(4, 30);
 
-    if (pages.isEmpty) {
+    // Even if pages aren't ready yet, render an instant, lightweight skeleton
+    // that looks like a blank page to avoid any perceived delay.
+    final bool pagesReady = pages.isNotEmpty;
+    if (!pagesReady) {
       if (pageController.positions.isEmpty) {
-        pageController = PageController(initialPage: currentPageIndex);
+        pageController = PageController(
+          initialPage: currentPageIndex,
+          viewportFraction: 1.0,
+        );
       }
-      return Scaffold(body: Center(child: CircularProgressIndicator()));
+      return Scaffold(
+        body: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                Theme.of(context).colorScheme.background,
+                Theme.of(context).colorScheme.surface,
+              ],
+            ),
+          ),
+          child: Column(
+            children: [
+              const SizedBox(height: 40),
+              Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Container(
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.primary.withOpacity(0.06),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surface,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 30),
+            ],
+          ),
+        ),
+      );
     }
 
     if (pageController.positions.isEmpty) {
-      pageController = PageController(initialPage: currentPageIndex);
+      pageController = PageController(
+        initialPage: currentPageIndex,
+        viewportFraction: 1.0,
+      );
     } else if (pageController.page != null &&
         pageController.page! >= pages.length) {
       pageController.dispose();
-      pageController = PageController(initialPage: currentPageIndex);
+      pageController = PageController(
+        initialPage: currentPageIndex,
+        viewportFraction: 1.0,
+      );
     }
 
     if (pages.isNotEmpty) {
       currentIndex = _surahIndexForPage(currentPageIndex);
+    }
+
+    // Prewarm sizing cache for current and adjacent pages after first frame,
+    // so we don't block build and scrolling feels instant on first swipe.
+    if (_lastPrewarmCenter != currentPageIndex && pages.isNotEmpty) {
+      _lastPrewarmCenter = currentPageIndex;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        try {
+          final horizontalPadding = 4.0;
+          final availableWidth = media.size.width - horizontalPadding * 2;
+
+          int headerLinesFor(int idx) {
+            final headerStartSurahId =
+                (pageStartSurahIds.isNotEmpty && idx < pageStartSurahIds.length)
+                ? pageStartSurahIds[idx]
+                : null;
+            bool pageHasBasmalahAtTop = false;
+            if (headerStartSurahId != null) {
+              const basmalahText = 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ';
+              final page = pages[idx];
+              pageHasBasmalahAtTop =
+                  page.isNotEmpty &&
+                  (page.first.id == 0 ||
+                      page.first.text.trim() == basmalahText);
+            }
+            final isBasmalahAllowedForSurah =
+                (pageStartSurahIds.isNotEmpty && idx < pageStartSurahIds.length)
+                ? (pageStartSurahIds[idx] != null &&
+                      pageStartSurahIds[idx] != 1 &&
+                      pageStartSurahIds[idx] != 9)
+                : false;
+            final headerLines =
+                (pageStartSurahIds.isNotEmpty &&
+                    idx < pageStartSurahIds.length &&
+                    pageStartSurahIds[idx] != null)
+                ? ((pageHasBasmalahAtTop || !isBasmalahAllowedForSurah) ? 1 : 2)
+                : 0;
+            return headerLines;
+          }
+
+          for (final idx in [
+            currentPageIndex - 1,
+            currentPageIndex,
+            currentPageIndex + 1,
+          ]) {
+            if (idx < 0 || idx >= pages.length) continue;
+            final headerStartSurahId = (idx < pageStartSurahIds.length)
+                ? pageStartSurahIds[idx]
+                : null;
+            final isFatihaFirstPage = headerStartSurahId == 1;
+            final isBaqarahFirstPage = headerStartSurahId == 2;
+            bool pageHasBasmalahAtTop = false;
+            if (headerStartSurahId != null) {
+              const basmalahText = 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ';
+              final pageList = pages[idx];
+              pageHasBasmalahAtTop =
+                  pageList.isNotEmpty &&
+                  (pageList.first.id == 0 ||
+                      pageList.first.text.trim() == basmalahText);
+            }
+            final isBasmalahAllowedForSurah =
+                headerStartSurahId != null &&
+                headerStartSurahId != 1 &&
+                headerStartSurahId != 9;
+
+            mushaf_view_widgets.VersesPageView.prewarmSizingCache(
+              context: context,
+              pages: pages,
+              pageIndex: idx,
+              availableWidth: availableWidth,
+              availableLinesForVerses: 15 - headerLinesFor(idx),
+              headerLines: headerLinesFor(idx),
+              isFatihaFirstPage: isFatihaFirstPage,
+              isBaqarahFirstPage: isBaqarahFirstPage,
+              isBasmalahAllowedForSurah: isBasmalahAllowedForSurah,
+              pageHasBasmalahAtTop: pageHasBasmalahAtTop,
+            );
+          }
+        } catch (_) {}
+      });
     }
 
     return Scaffold(

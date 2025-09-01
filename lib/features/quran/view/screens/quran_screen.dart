@@ -35,9 +35,7 @@ class _QuranScreenState extends State<QuranScreen> {
   }
 
   Future<void> _createMushafDialog(List surahs) async {
-    final controller = TextEditingController(
-      text: 'ختمة ${DateTime.now().month}',
-    );
+    final controller = TextEditingController();
     final name = await showDialog<String>(
       context: context,
       builder: (c) => AlertDialog(
@@ -45,7 +43,7 @@ class _QuranScreenState extends State<QuranScreen> {
         content: TextField(
           controller: controller,
           textDirection: TextDirection.rtl,
-          decoration: const InputDecoration(hintText: 'اسم المصحف'),
+          decoration: const InputDecoration(hintText: 'اكتب اسم للخاتمه'),
         ),
         actions: [
           TextButton(
@@ -173,8 +171,40 @@ class _QuranScreenState extends State<QuranScreen> {
                                         }
                                       },
                                       onDelete: () async {
-                                        await MushafStorage.removeMushaf(m.id);
-                                        setState(() {});
+                                        final confirmed =
+                                            await showDialog<bool>(
+                                              context: context,
+                                              builder: (c) => AlertDialog(
+                                                title: const Text(
+                                                  'تأكيد الحذف',
+                                                ),
+                                                content: const Text(
+                                                  'هل انت متأكد من الحذف؟',
+                                                ),
+                                                actions: [
+                                                  TextButton(
+                                                    onPressed: () =>
+                                                        Navigator.pop(c, false),
+                                                    child: const Text('إلغاء'),
+                                                  ),
+                                                  TextButton(
+                                                    onPressed: () =>
+                                                        Navigator.pop(c, true),
+                                                    style: TextButton.styleFrom(
+                                                      foregroundColor:
+                                                          Colors.red,
+                                                    ),
+                                                    child: const Text('حذف'),
+                                                  ),
+                                                ],
+                                              ),
+                                            );
+                                        if (confirmed == true) {
+                                          await MushafStorage.removeMushaf(
+                                            m.id,
+                                          );
+                                          if (mounted) setState(() {});
+                                        }
                                       },
                                     );
                                   },

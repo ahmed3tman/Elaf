@@ -12,6 +12,183 @@ class VersesPageView extends StatelessWidget {
   final List<int?>? pageStartSurahIds;
   final List<QuranSurah>? allSurahs;
 
+  // Lightweight cache to avoid repeating expensive TextPainter measurements
+  // for the same page with the same width and header configuration.
+  static final Map<String, _CachedSizing> _sizingCache = {};
+
+  // Pre-compute and store sizing for a page so the first build is fast.
+  static void prewarmSizingCache({
+    required BuildContext context,
+    required List<List<QuranVerse>> pages,
+    required int pageIndex,
+    required double availableWidth,
+    required int availableLinesForVerses,
+    required int headerLines,
+    required bool isFatihaFirstPage,
+    required bool isBaqarahFirstPage,
+    required bool isBasmalahAllowedForSurah,
+    required bool pageHasBasmalahAtTop,
+  }) {
+    if (pageIndex < 0 || pageIndex >= pages.length) return;
+    final page = pages[pageIndex];
+    final String cacheKey =
+        '$pageIndex:${availableWidth.round()}:$availableLinesForVerses:$headerLines:${Theme.of(context).brightness}';
+    if (_sizingCache.containsKey(cacheKey)) return; // already warmed
+
+    // Rebuild measurement text for verses only (exclude header lines)
+    String buildVersesMeasurementText(double fontSize) {
+      final sb = StringBuffer();
+      const String hairSpace = '\u200A';
+      for (int i = 0; i < page.length; i++) {
+        final verse = page[i];
+        if (verse.id == 0) {
+          if (i == 0 && !isBasmalahAllowedForSurah) {
+            continue;
+          }
+          sb.writeln(verse.text);
+        } else {
+          sb.write(verse.text);
+          sb.write(hairSpace);
+          sb.write(
+            QuranVerseNumbers.convertToArabicNumerals(verse.id.toString()),
+          );
+          sb.write(hairSpace);
+        }
+      }
+      return sb.toString();
+    }
+
+    int measureLineCount(String text, TextStyle style) {
+      final tp = TextPainter(
+        text: TextSpan(text: text, style: style),
+        textDirection: TextDirection.rtl,
+        textAlign: TextAlign.justify,
+        textWidthBasis: TextWidthBasis.parent,
+        maxLines: 1000,
+      );
+      tp.layout(minWidth: 0, maxWidth: availableWidth);
+      return tp.computeLineMetrics().length;
+    }
+
+    final bool useSlightlySmallerFont = isFatihaFirstPage || isBaqarahFirstPage;
+
+    double computedFontSize = useSlightlySmallerFont ? 22.0 : 26.0;
+    const double minFontSize = 14.0;
+    const double maxFontSizeGlobal = 42.0;
+
+    double computedWordSpacing = -0.2;
+    double computedLetterSpacing = -0.2;
+    const double minWordSpacing = -1.2;
+    const double maxWordSpacing = 6.0;
+    const double maxLetterSpacing = 1.5;
+
+    final baseStyleTemplate = AppFonts.quranTextStyle(
+      color: Theme.of(context).colorScheme.onBackground,
+      fontSize: computedFontSize,
+      height: 1.9,
+      letterSpacing: computedLetterSpacing,
+    );
+    TextStyle baseStyle = baseStyleTemplate.copyWith(
+      wordSpacing: computedWordSpacing,
+    );
+
+    String measureText = buildVersesMeasurementText(computedFontSize);
+    int lines = measureLineCount(measureText, baseStyle);
+
+    while (lines > availableLinesForVerses &&
+        (computedWordSpacing > minWordSpacing ||
+            computedFontSize > minFontSize)) {
+      if (computedWordSpacing > minWordSpacing) {
+        computedWordSpacing = (computedWordSpacing - 0.03).clamp(
+          minWordSpacing,
+          100.0,
+        );
+      } else if (computedFontSize > minFontSize) {
+        computedFontSize = (computedFontSize - 0.3).clamp(minFontSize, 100.0);
+      }
+      baseStyle = baseStyleTemplate.copyWith(
+        fontSize: computedFontSize,
+        wordSpacing: computedWordSpacing,
+        letterSpacing: computedLetterSpacing,
+      );
+      measureText = buildVersesMeasurementText(computedFontSize);
+      lines = measureLineCount(measureText, baseStyle);
+    }
+
+    int iterations = 0;
+    const maxIterations = 100;
+    while (lines < availableLinesForVerses && iterations < maxIterations) {
+      bool changed = false;
+      iterations++;
+
+      if (computedFontSize < maxFontSizeGlobal) {
+        double increment = useSlightlySmallerFont ? 0.05 : 0.1;
+        final prevFont = computedFontSize;
+        computedFontSize = (computedFontSize + increment).clamp(
+          0.0,
+          maxFontSizeGlobal,
+        );
+        baseStyle = baseStyle.copyWith(fontSize: computedFontSize);
+        measureText = buildVersesMeasurementText(computedFontSize);
+        final nextLines = measureLineCount(measureText, baseStyle);
+        if (nextLines > availableLinesForVerses) {
+          computedFontSize = prevFont;
+          baseStyle = baseStyle.copyWith(fontSize: computedFontSize);
+        } else if (nextLines > lines) {
+          lines = nextLines;
+          changed = true;
+          if (lines >= availableLinesForVerses) break;
+        }
+      }
+
+      if (computedWordSpacing < maxWordSpacing) {
+        final prevWs = computedWordSpacing;
+        computedWordSpacing = (computedWordSpacing + 0.03).clamp(
+          minWordSpacing,
+          maxWordSpacing,
+        );
+        baseStyle = baseStyle.copyWith(wordSpacing: computedWordSpacing);
+        measureText = buildVersesMeasurementText(computedFontSize);
+        final nextLines = measureLineCount(measureText, baseStyle);
+        if (nextLines > availableLinesForVerses) {
+          computedWordSpacing = prevWs;
+          baseStyle = baseStyle.copyWith(wordSpacing: computedWordSpacing);
+        } else if (nextLines > lines) {
+          lines = nextLines;
+          changed = true;
+          if (lines >= availableLinesForVerses) break;
+        }
+      }
+
+      if (computedLetterSpacing < maxLetterSpacing) {
+        final prevLs = computedLetterSpacing;
+        computedLetterSpacing = (computedLetterSpacing + 0.015).clamp(
+          -0.5,
+          maxLetterSpacing,
+        );
+        baseStyle = baseStyle.copyWith(letterSpacing: computedLetterSpacing);
+        measureText = buildVersesMeasurementText(computedFontSize);
+        final nextLines = measureLineCount(measureText, baseStyle);
+        if (nextLines > availableLinesForVerses) {
+          computedLetterSpacing = prevLs;
+          baseStyle = baseStyle.copyWith(letterSpacing: computedLetterSpacing);
+        } else if (nextLines > lines) {
+          lines = nextLines;
+          changed = true;
+          if (lines >= availableLinesForVerses) break;
+        }
+      }
+
+      if (!changed) break;
+    }
+
+    _sizingCache[cacheKey] = _CachedSizing(
+      fontSize: computedFontSize,
+      wordSpacing: computedWordSpacing,
+      letterSpacing: computedLetterSpacing,
+    );
+  }
+
   const VersesPageView({
     super.key,
     required this.pages,
@@ -28,6 +205,10 @@ class VersesPageView extends StatelessWidget {
       controller: controller,
       itemCount: pages.length,
       onPageChanged: onPageChanged,
+      physics: const PageScrollPhysics(),
+      allowImplicitScrolling: true,
+      // Preload adjacent pages to reduce perceived latency when swiping.
+      // Note: cacheExtent is ignored by PageView; prefetching is achieved by build of neighbors via PageView.
       itemBuilder: (context, pageIndex) {
         // Build the page content while enforcing exactly 15 visual lines.
         // Strategy:
@@ -151,8 +332,24 @@ class VersesPageView extends StatelessWidget {
         final availableLinesForVerses = 15 - headerLines;
 
         // Measure verses only and fit them into availableLinesForVerses.
+        // Try cache first to skip heavy measuring where possible.
+        final String cacheKey =
+            '$pageIndex:${availableWidth.round()}:$availableLinesForVerses:$headerLines:${Theme.of(context).brightness}';
         String measureText = buildVersesMeasurementText(computedFontSize);
         int lines = measureLineCount(measureText, baseStyle);
+        final _CachedSizing? cached = _sizingCache[cacheKey];
+        if (cached != null) {
+          computedFontSize = cached.fontSize;
+          computedWordSpacing = cached.wordSpacing;
+          computedLetterSpacing = cached.letterSpacing;
+          baseStyle = baseStyleTemplate.copyWith(
+            fontSize: computedFontSize,
+            wordSpacing: computedWordSpacing,
+            letterSpacing: computedLetterSpacing,
+          );
+          measureText = buildVersesMeasurementText(computedFontSize);
+          lines = measureLineCount(measureText, baseStyle);
+        }
 
         // First, try reducing spacing and font size if we have too many lines
         while (lines > availableLinesForVerses &&
@@ -260,7 +457,16 @@ class VersesPageView extends StatelessWidget {
           if (!changed) {
             break;
           }
-        } // Now build header section and body widgets separately.
+        }
+
+        // Store sizing in cache for this configuration to speed up future builds.
+        _sizingCache[cacheKey] = _CachedSizing(
+          fontSize: computedFontSize,
+          wordSpacing: computedWordSpacing,
+          letterSpacing: computedLetterSpacing,
+        );
+
+        // Now build header section and body widgets separately.
         final List<Widget> bodyWidgets = [];
         final List<InlineSpan> verseSpans = [];
 
@@ -564,7 +770,7 @@ class VersesPageView extends StatelessWidget {
           },
         );
 
-        return SafeArea(
+        final pageWidget = SafeArea(
           bottom: false,
           top: false,
           child: Directionality(
@@ -595,7 +801,21 @@ class VersesPageView extends StatelessWidget {
             ),
           ),
         );
+
+        // Wrap page in RepaintBoundary to isolate painting and reduce repaints.
+        return RepaintBoundary(child: pageWidget);
       },
     );
   }
+}
+
+class _CachedSizing {
+  final double fontSize;
+  final double wordSpacing;
+  final double letterSpacing;
+  const _CachedSizing({
+    required this.fontSize,
+    required this.wordSpacing,
+    required this.letterSpacing,
+  });
 }
