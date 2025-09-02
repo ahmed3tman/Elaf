@@ -100,14 +100,18 @@ flutter:
 # Configure native splash screens for Android and iOS
 flutter_native_splash:
   color: "#FFFFFF"
-  image: assets/splash.JPEG
-  background_image: assets/splash.JPEG
-  android: true
+  # iOS configuration (keeps original image)
   ios: true
-  web: false
+  ios_content_mode: scaleAspectFill
+  image: assets/splash.JPEG
+  # Android configuration with new image
+  android: true
+  android_gravity: fill
   android_12:
     color: "#FFFFFF"
-    image: assets/splash.JPEG
+    image: assets/splash_android.PNG
+    icon_background_color: "#FFFFFF"
+  web: false
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
