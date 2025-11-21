@@ -251,7 +251,7 @@ class _MushafScreenState extends State<MushafScreen> {
           ),
           child: Column(
             children: [
-              const SizedBox(height: 40),
+              const SizedBox(height: 56),
               Padding(
                 padding: const EdgeInsets.all(12.0),
                 child: Container(
@@ -319,7 +319,7 @@ class _MushafScreenState extends State<MushafScreen> {
           children: [
             Padding(
               padding: const EdgeInsets.only(
-                top: 40,
+                top: 43,
                 left: 4,
                 right: 4,
                 bottom: 4,
@@ -398,6 +398,7 @@ class _MushafScreenState extends State<MushafScreen> {
                 ],
               ),
             ),
+            SizedBox(height: 10),
             // PageView for paginated verses (pages are built across the whole mushaf)
             Expanded(
               child: mushaf_view_widgets.VersesPageView(
@@ -417,31 +418,28 @@ class _MushafScreenState extends State<MushafScreen> {
                 lineMappingByPageTokens: _lineMapping,
               ),
             ),
-            SizedBox(
-              height: bottomBarHeight,
-              child: Center(
-                child: Container(
-                  width: 200,
-                  // reduce bottom margin so it doesn't eat into content height
-                  margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                  height: 36,
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(8),
-                    color: Theme.of(
-                      context,
-                    ).colorScheme.primary.withOpacity(0.08),
+            Center(
+              child: Container(
+                width: 200,
+                // reduce bottom margin so it doesn't eat into content height
+                margin: const EdgeInsets.fromLTRB(12, 0, 12, 15),
+                height: 36,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.primary.withOpacity(0.08),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  'صفحة ${QuranVerseNumbers.convertToArabicNumerals((currentPageIndex + 1).toString())} / ${QuranVerseNumbers.convertToArabicNumerals(pages.length.toString())}',
+                  style: AppFonts.generalTextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: Theme.of(context).colorScheme.primary,
                   ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    'صفحة ${QuranVerseNumbers.convertToArabicNumerals((currentPageIndex + 1).toString())} / ${QuranVerseNumbers.convertToArabicNumerals(pages.length.toString())}',
-                    style: AppFonts.generalTextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
+                  textAlign: TextAlign.center,
                 ),
               ),
             ),
