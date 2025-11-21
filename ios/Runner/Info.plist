@@ -45,6 +45,8 @@
 			<string>UIInterfaceOrientationLandscapeLeft</string>
 			<string>UIInterfaceOrientationLandscapeRight</string>
 		</array>
+		<key>NSLocationWhenInUseUsageDescription</key>
+		<string>نحتاج موقعك لحساب مواقيت الصلاة بدقة</string>
 		<key>UIStatusBarHidden</key>
 		<false/>
 	</dict>

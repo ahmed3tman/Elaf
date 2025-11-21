@@ -5,6 +5,8 @@ import 'package:jalees/features/quran/view/screens/quran_screen.dart';
 import 'package:jalees/features/bukhari/view/screens/bukhari_screen.dart';
 import 'package:jalees/features/azkar/view/screens/azkar_screen.dart';
 import '../../../jadwal/view/screens/jadwali_screen.dart';
+import 'package:jalees/features/quran/data/page_mapping_repository.dart';
+import 'package:jalees/features/quran/data/line_mapping_repository.dart';
 
 class Nav extends StatefulWidget {
   const Nav({super.key});
@@ -30,6 +32,12 @@ class _NavState extends State<Nav> with TickerProviderStateMixin {
     super.initState();
     _tabController = TabController(length: 4, vsync: this);
     _tabController.animateTo(_currentIndex);
+
+    // Pre-load Quran mapping data in background
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      PageMappingRepository.ensureLoaded();
+      LineMappingRepository.ensureLoaded();
+    });
   }
 
   @override

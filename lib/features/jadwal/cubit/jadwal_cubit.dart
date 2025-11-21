@@ -1,135 +1,277 @@
-import 'dart:convert';
-
+import 'dart:async';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
-import '../data/jadwal_model.dart';
+import '../data/models/daily_task_list_model.dart';
+import '../data/services/daily_task_storage_service.dart';
+import '../data/services/prayer_times_service.dart';
 import 'jadwal_state.dart';
 
 class JadwalCubit extends Cubit<JadwalState> {
-  static const String _prefsKey = 'jadwal_tables_v1';
-  JadwalCubit() : super(const JadwalState());
+  final DailyTaskStorageService _storageService;
+  final PrayerTimesService _prayerTimesService;
+  Timer? _midnightTimer;
+  Timer? _unlockTimer;
+  bool _isDisposed = false;
 
-  Future<void> load() async {
+  JadwalCubit({
+    DailyTaskStorageService? storageService,
+    PrayerTimesService? prayerTimesService,
+  }) : _storageService = storageService ?? DailyTaskStorageService(),
+       _prayerTimesService = prayerTimesService ?? PrayerTimesService(),
+       super(const JadwalState()) {
+    _scheduleMidnightReset();
+    _scheduleTaskUnlockCheck();
+  }
+
+  /// Initialize - load current day or create new one
+  Future<void> initialize() async {
     emit(state.copyWith(status: JadwalStatus.loading));
+
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_prefsKey);
-      if (raw == null) {
-        final initial = [JadwalModel.empty('الجدول 1', 7, 5)];
-        await prefs.setString(
-          _prefsKey,
-          jsonEncode(initial.map((e) => e.toMap()).toList()),
-        );
-        emit(state.copyWith(status: JadwalStatus.success, tables: initial));
-        return;
+      // Load current day from storage
+      var currentDay = await _storageService.loadCurrentDay();
+      final today = DateTime.now();
+      final todayDate = DateTime(today.year, today.month, today.day);
+
+      // Check if we need to create a new day
+      if (currentDay == null || currentDay.date.isBefore(todayDate)) {
+        // Save old day to history if exists
+        if (currentDay != null) {
+          await _storageService.saveDayToHistory(currentDay);
+        }
+
+        // Create new day
+        currentDay = await _createNewDay();
+      } else {
+        // Update lock states for existing day
+        currentDay = _updateTaskLockStates(currentDay);
       }
-      final decoded = jsonDecode(raw) as List<dynamic>;
-      final tables = decoded
-          .map((e) => JadwalModel.fromMap(Map<String, dynamic>.from(e as Map)))
-          .toList();
-      emit(state.copyWith(status: JadwalStatus.success, tables: tables));
+
+      // Load history
+      final history = await _storageService.loadHistory();
+
+      // Get prayer times
+      final prayerTimes = await _prayerTimesService.getTodayPrayerTimes();
+
+      // Get next prayer
+      final nextPrayer = prayerTimes != null
+          ? _prayerTimesService.getNextPrayer(prayerTimes)
+          : null;
+
+      emit(
+        state.copyWith(
+          status: JadwalStatus.success,
+          currentDay: currentDay,
+          history: history,
+          todayPrayerTimes: prayerTimes ?? currentDay.prayerTimes,
+          nextPrayer: nextPrayer,
+        ),
+      );
+
+      // Trigger background update for prayer times
+      _updatePrayerTimesInBackground();
     } catch (e) {
       emit(state.copyWith(status: JadwalStatus.failure, error: e.toString()));
     }
   }
 
-  Future<void> save() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      _prefsKey,
-      jsonEncode(state.tables.map((e) => e.toMap()).toList()),
-    );
-  }
+  /// Update prayer times in background and refresh state if changed
+  Future<void> _updatePrayerTimesInBackground() async {
+    try {
+      final newPrayerTimes = await _prayerTimesService.updatePrayerTimes();
 
-  Future<void> addTable(JadwalModel model) async {
-    final newList = List<JadwalModel>.from(state.tables)..add(model);
-    emit(state.copyWith(tables: newList));
-    save();
-  }
+      // Check if cubit was disposed during async operation
+      if (_isDisposed || newPrayerTimes == null || state.currentDay == null) {
+        return;
+      }
 
-  Future<void> renameTable(int index, String newName) async {
-    final newList = List<JadwalModel>.from(state.tables);
-    newList[index].name = newName;
-    emit(state.copyWith(tables: newList));
-    save();
-  }
+      // Check if times actually changed to avoid unnecessary rebuilds
+      final currentTimes = state.todayPrayerTimes;
+      if (currentTimes != null &&
+          currentTimes.fajr == newPrayerTimes.fajr &&
+          currentTimes.dhuhr == newPrayerTimes.dhuhr &&
+          currentTimes.asr == newPrayerTimes.asr &&
+          currentTimes.maghrib == newPrayerTimes.maghrib &&
+          currentTimes.isha == newPrayerTimes.isha) {
+        return;
+      }
 
-  Future<void> deleteTable(int index) async {
-    final newList = List<JadwalModel>.from(state.tables)..removeAt(index);
-    emit(state.copyWith(tables: newList));
-    save();
-  }
+      // Update state with new times
+      final nextPrayer = _prayerTimesService.getNextPrayer(newPrayerTimes);
 
-  Future<void> addRow(int index) async {
-    final newList = List<JadwalModel>.from(state.tables);
-    final table = newList[index];
-    table.cells.add(List.generate(table.cols, (_) => ''));
-    table.rows += 1;
-    emit(state.copyWith(tables: newList));
-    save();
-  }
+      // We also need to update the current day's prayer times if it was created today
+      // Note: DailyTaskList doesn't have a copyWith for prayerTimes directly exposed easily
+      // or we might need to recreate it.
+      // However, DailyTaskList holds the prayer times.
 
-  Future<void> addRowAt(int tableIndex, int atIndex) async {
-    final newList = List<JadwalModel>.from(state.tables);
-    final table = newList[tableIndex];
-    final cols = table.cols;
-    table.cells.insert(atIndex, List.generate(cols, (_) => ''));
-    table.rows += 1;
-    emit(state.copyWith(tables: newList));
-    save();
-  }
+      // Let's update the current day model with new prayer times
+      // We need to recreate the tasks with new unlock times based on new prayer times
+      final updatedDay = DailyTaskList.create(
+        state.currentDay!.date,
+        newPrayerTimes,
+      );
 
-  Future<void> deleteRow(int tableIndex, int rowIndex) async {
-    final newList = List<JadwalModel>.from(state.tables);
-    final table = newList[tableIndex];
-    if (table.rows <= 1) return; // keep at least one row
-    table.cells.removeAt(rowIndex);
-    table.rows -= 1;
-    emit(state.copyWith(tables: newList));
-    save();
-  }
+      // Preserve completion status
+      final preservedTasks = updatedDay.tasks.map((newTask) {
+        final oldTask = state.currentDay!.tasks.firstWhere(
+          (t) => t.id == newTask.id,
+        );
+        return newTask.copyWith(isCompleted: oldTask.isCompleted);
+      }).toList();
 
-  Future<void> addColumn(int tableIndex, int atIndex) async {
-    final newList = List<JadwalModel>.from(state.tables);
-    final table = newList[tableIndex];
-    for (var r = 0; r < table.rows; r++) {
-      (table.cells[r] as List).insert(atIndex, '');
-    }
-    table.cols += 1;
-    emit(state.copyWith(tables: newList));
-    save();
-  }
+      final finalDay = updatedDay.copyWith(tasks: preservedTasks);
 
-  Future<void> deleteColumn(int tableIndex, int colIndex) async {
-    final newList = List<JadwalModel>.from(state.tables);
-    final table = newList[tableIndex];
-    if (table.cols <= 1) return; // keep at least one column
-    for (var r = 0; r < table.rows; r++) {
-      (table.cells[r] as List).removeAt(colIndex);
-    }
-    table.cols -= 1;
-    emit(state.copyWith(tables: newList));
-    save();
-  }
+      // Final check before emitting
+      if (_isDisposed) return;
 
-  /// Update stored column width for a table (persist in background).
-  void updateColumnWidth(int tableIndex, int colIndex, double width) {
-    final newList = List<JadwalModel>.from(state.tables);
-    final table = newList[tableIndex];
-    table.colWidths ??= List<double>.filled(table.cols, 120.0);
-    if (colIndex >= 0 && colIndex < table.colWidths!.length) {
-      table.colWidths![colIndex] = width;
-      emit(state.copyWith(tables: newList));
-      save();
+      emit(
+        state.copyWith(
+          todayPrayerTimes: newPrayerTimes,
+          currentDay: finalDay,
+          nextPrayer: nextPrayer,
+        ),
+      );
+
+      await _storageService.saveCurrentDay(finalDay);
+    } catch (e) {
+      // Silent failure for background update
+      if (!_isDisposed) {
+        print('Background prayer time update failed: $e');
+      }
     }
   }
 
-  Future<void> editCell(int tableIndex, int row, int col, String value) async {
-    final newList = List<JadwalModel>.from(state.tables);
-    newList[tableIndex].cells[row][col] = value;
-    emit(state.copyWith(tables: newList));
-    // Save in background to avoid blocking UI during rapid edits.
-    save();
+  /// Create a new day with fresh tasks
+  Future<DailyTaskList> _createNewDay() async {
+    final today = DateTime.now();
+    final todayDate = DateTime(today.year, today.month, today.day);
+
+    // Get prayer times
+    final prayerTimes = await _prayerTimesService.getTodayPrayerTimes();
+
+    if (prayerTimes == null) {
+      throw Exception('Unable to get prayer times');
+    }
+
+    // Create new task list
+    final newDay = DailyTaskList.create(todayDate, prayerTimes);
+
+    // Save to storage
+    await _storageService.saveCurrentDay(newDay);
+
+    return newDay;
+  }
+
+  /// Update task lock states based on current time
+  DailyTaskList _updateTaskLockStates(DailyTaskList taskList) {
+    final now = DateTime.now();
+    final updatedTasks = taskList.tasks.map((task) {
+      if (task.isPrayer && task.unlockTime != null) {
+        final shouldBeUnlocked = now.isAfter(task.unlockTime!);
+        if (shouldBeUnlocked && task.isLocked) {
+          return task.copyWith(isLocked: false);
+        }
+      }
+      return task;
+    }).toList();
+
+    return taskList.copyWith(tasks: updatedTasks);
+  }
+
+  /// Toggle task completion
+  Future<void> toggleTask(String taskId) async {
+    if (state.currentDay == null) return;
+
+    final updatedTasks = state.currentDay!.tasks.map((task) {
+      if (task.id == taskId && !task.isLocked) {
+        return task.copyWith(isCompleted: !task.isCompleted);
+      }
+      return task;
+    }).toList();
+
+    final updatedDay = state.currentDay!.copyWith(tasks: updatedTasks);
+
+    emit(state.copyWith(currentDay: updatedDay));
+
+    // Save to storage
+    await _storageService.saveCurrentDay(updatedDay);
+  }
+
+  /// Manually save current day to history
+  Future<void> saveCurrentDayToHistory() async {
+    if (state.currentDay == null) return;
+    await _storageService.saveDayToHistory(state.currentDay!);
+    await loadHistory(); // Reload history to reflect changes
+  }
+
+  /// Load history
+  Future<void> loadHistory() async {
+    final history = await _storageService.loadHistory();
+    emit(state.copyWith(history: history));
+  }
+
+  /// Schedule midnight reset
+  void _scheduleMidnightReset() {
+    _midnightTimer?.cancel();
+
+    final now = DateTime.now();
+    final tomorrow = DateTime(now.year, now.month, now.day + 1);
+    final duration = tomorrow.difference(now);
+
+    _midnightTimer = Timer(duration, () async {
+      // Save current day to history
+      if (state.currentDay != null) {
+        await _storageService.saveDayToHistory(state.currentDay!);
+      }
+
+      // Create new day and reload
+      await initialize();
+
+      // Schedule next midnight reset
+      _scheduleMidnightReset();
+    });
+  }
+
+  /// Schedule periodic task unlock check (every minute)
+  void _scheduleTaskUnlockCheck() {
+    _unlockTimer?.cancel();
+
+    _unlockTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
+      if (state.currentDay != null) {
+        final updatedDay = _updateTaskLockStates(state.currentDay!);
+
+        // Check if any task was unlocked
+        var hasChanges = false;
+        for (var i = 0; i < updatedDay.tasks.length; i++) {
+          if (updatedDay.tasks[i].isLocked !=
+              state.currentDay!.tasks[i].isLocked) {
+            hasChanges = true;
+            break;
+          }
+        }
+
+        if (hasChanges) {
+          emit(state.copyWith(currentDay: updatedDay));
+          _storageService.saveCurrentDay(updatedDay);
+        }
+
+        // Update next prayer
+        if (state.todayPrayerTimes != null) {
+          final nextPrayer = _prayerTimesService.getNextPrayer(
+            state.todayPrayerTimes!,
+          );
+          if (nextPrayer != state.nextPrayer) {
+            emit(state.copyWith(nextPrayer: nextPrayer));
+          }
+        }
+      }
+    });
+  }
+
+  @override
+  Future<void> close() {
+    _isDisposed = true;
+    _midnightTimer?.cancel();
+    _unlockTimer?.cancel();
+    return super.close();
   }
 }

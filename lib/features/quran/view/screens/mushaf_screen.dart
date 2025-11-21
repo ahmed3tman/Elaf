@@ -77,6 +77,7 @@ class _MushafScreenState extends State<MushafScreen> {
         if (currentPageIndex >= pages.length) {
           currentPageIndex = pages.isNotEmpty ? pages.length - 1 : 0;
         }
+        if (mounted) setState(() {}); // Fix: Ensure UI rebuilds after loading
         // Load line mapping in parallel
         try {
           final lm = await LineMappingRepository.ensureLoaded();
@@ -216,16 +217,7 @@ class _MushafScreenState extends State<MushafScreen> {
     // slightly taller bottom bar for better tap/visibility
     const bottomBarHeight = 36.0;
     const navBarHeight = 100.0;
-    final availableHeight =
-        media.size.height -
-        media.padding.top -
-        bottomBarHeight -
-        navBarHeight -
-        8;
-    const estimatedVerseHeight = 84.0;
-    final versesPerPage = (availableHeight / estimatedVerseHeight)
-        .floor()
-        .clamp(4, 30);
+    // Removed manual availableHeight calculation
 
     // Even if pages aren't ready yet, render an instant, lightweight skeleton
     // that looks like a blank page to avoid any perceived delay.
@@ -401,21 +393,25 @@ class _MushafScreenState extends State<MushafScreen> {
             SizedBox(height: 10),
             // PageView for paginated verses (pages are built across the whole mushaf)
             Expanded(
-              child: mushaf_view_widgets.VersesPageView(
-                pages: pages.cast<List<QuranVerse>>(),
-                controller: pageController,
-                onPageChanged: (p) => setState(() {
-                  currentPageIndex = p;
-                  currentIndex = _surahIndexForPage(p);
-                  // update local saved indicator to reflect whether this page is the saved one
-                  _isSaved =
-                      widget.mushaf.currentPageIndex == currentPageIndex &&
-                      widget.mushaf.currentSurahIndex == currentIndex;
-                }),
-                pageHeight: availableHeight,
-                pageStartSurahIds: pageStartSurahIds,
-                allSurahs: widget.allSurahs,
-                lineMappingByPageTokens: _lineMapping,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  return mushaf_view_widgets.VersesPageView(
+                    pages: pages.cast<List<QuranVerse>>(),
+                    controller: pageController,
+                    onPageChanged: (p) => setState(() {
+                      currentPageIndex = p;
+                      currentIndex = _surahIndexForPage(p);
+                      // update local saved indicator to reflect whether this page is the saved one
+                      _isSaved =
+                          widget.mushaf.currentPageIndex == currentPageIndex &&
+                          widget.mushaf.currentSurahIndex == currentIndex;
+                    }),
+                    pageHeight: constraints.maxHeight,
+                    pageStartSurahIds: pageStartSurahIds,
+                    allSurahs: widget.allSurahs,
+                    lineMappingByPageTokens: _lineMapping,
+                  );
+                },
               ),
             ),
             Center(

@@ -35,6 +35,12 @@ class PageMappingRepository {
     _cache = parsed;
     return parsed;
   }
+
+  /// Reset cache (useful for Hot Reload)
+  static void reset() {
+    _cache = null;
+    _loading = null;
+  }
 }
 
 // Top-level function for compute() to parse mapping on a background isolate.

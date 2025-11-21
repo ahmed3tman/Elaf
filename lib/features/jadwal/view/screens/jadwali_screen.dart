@@ -1,42 +1,13 @@
-// import 'package:flutter/material.dart';
-
-// class JadwaliScreen extends StatelessWidget {
-//   const JadwaliScreen({super.key});
-
-//   @override
-//   Widget build(BuildContext context) {
-//     return Scaffold(
-//       appBar: AppBar(
-//         title: const Text('جدولي'),
-//       ),
-//       body: const Center(
-//         child: Text(
-//           'جدولي',
-//           style: TextStyle(fontSize: 24),
-//         ),
-//       ),
-//     );
-//   }
-// }
-
-
-
-
-
-
-
-
-
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-
 import 'package:jalees/core/share/widgets/gradient_background.dart';
-
-import '../../data/jadwal_model.dart';
 import '../../cubit/jadwal_cubit.dart';
 import '../../cubit/jadwal_state.dart';
-import '../widgets/jadwal_card.dart';
-import 'jadwal_detail_screen.dart';
+import '../../data/models/prayer_times_model.dart';
+import '../widgets/task_item_widget.dart';
+import '../widgets/prayer_times_widget.dart';
+import '../widgets/day_color_indicator.dart';
+import 'history_screen.dart';
 
 class JadwaliScreen extends StatefulWidget {
   const JadwaliScreen({super.key});
@@ -52,129 +23,13 @@ class _JadwaliScreenState extends State<JadwaliScreen> {
   void initState() {
     super.initState();
     _cubit = JadwalCubit();
-    _cubit.load();
+    _cubit.initialize();
   }
 
   @override
   void dispose() {
     _cubit.close();
     super.dispose();
-  }
-
-  Future<void> _createTableDialog(BuildContext context, int existCount) async {
-    final nameCtrl = TextEditingController(text: 'الجدول ${existCount + 1}');
-    final rowsCtrl = TextEditingController(text: '7');
-    final colsCtrl = TextEditingController(text: '5');
-
-    await showDialog(
-      context: context,
-      builder: (ctx) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          title: const Text('إنشاء جدول جديد'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameCtrl,
-                textAlign: TextAlign.right,
-                decoration: const InputDecoration(labelText: 'اسم الجدول'),
-              ),
-              TextField(
-                controller: rowsCtrl,
-                keyboardType: TextInputType.number,
-                textAlign: TextAlign.right,
-                decoration: const InputDecoration(labelText: 'عدد الصفوف'),
-              ),
-              TextField(
-                controller: colsCtrl,
-                keyboardType: TextInputType.number,
-                textAlign: TextAlign.right,
-                decoration: const InputDecoration(labelText: 'عدد الأعمدة'),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('إلغاء'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                final name = nameCtrl.text.trim();
-                final rows = int.tryParse(rowsCtrl.text) ?? 7;
-                final cols = int.tryParse(colsCtrl.text) ?? 5;
-                final model = JadwalModel.empty(
-                  name.isEmpty ? 'الجدول ${existCount + 1}' : name,
-                  rows,
-                  cols,
-                );
-                _cubit.addTable(model);
-                Navigator.pop(ctx);
-              },
-              child: const Text('إنشاء'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _renameDialog(
-    BuildContext context,
-    int index,
-    String current,
-  ) async {
-    final ctrl = TextEditingController(text: current);
-    await showDialog(
-      context: context,
-      builder: (ctx) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          title: const Text('تعديل اسم الجدول'),
-          content: TextField(controller: ctrl, textAlign: TextAlign.right),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('إلغاء'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                _cubit.renameTable(index, ctrl.text);
-                Navigator.pop(ctx);
-              },
-              child: const Text('حفظ'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _confirmDelete(BuildContext context, int index) async {
-    final confirmed =
-        await showDialog<bool>(
-          context: context,
-          builder: (ctx) => Directionality(
-            textDirection: TextDirection.rtl,
-            child: AlertDialog(
-              title: const Text('حذف الجدول'),
-              content: const Text('هل أنت متأكد من حذف هذا الجدول؟'),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx, false),
-                  child: const Text('إلغاء'),
-                ),
-                ElevatedButton(
-                  onPressed: () => Navigator.pop(ctx, true),
-                  child: const Text('حذف'),
-                ),
-              ],
-            ),
-          ),
-        ) ??
-        false;
-    if (confirmed) _cubit.deleteTable(index);
   }
 
   @override
@@ -184,110 +39,273 @@ class _JadwaliScreenState extends State<JadwaliScreen> {
       child: GradientScaffold(
         appBar: AppBar(
           title: const Text('جدولي'),
+          centerTitle: true,
           actions: [
-            BlocBuilder<JadwalCubit, JadwalState>(
-              builder: (context, state) {
-                return IconButton(
-                  onPressed: () =>
-                      _createTableDialog(context, state.tables.length),
-                  icon: const Icon(Icons.add),
+            IconButton(
+              icon: const Icon(Icons.history),
+              tooltip: 'السجل',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (routeContext) => BlocProvider.value(
+                      value: _cubit,
+                      child: const HistoryScreen(),
+                    ),
+                  ),
                 );
               },
             ),
           ],
         ),
-        body: Directionality(
-          textDirection: TextDirection.rtl,
-          child: Padding(
-            padding: const EdgeInsets.all(12.0),
-            child: Container(
-              decoration: BoxDecoration(
-                color: Theme.of(context).cardColor.withOpacity(0.04),
-                borderRadius: BorderRadius.circular(14),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.03),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-                // small subtle gradient for depth
-                gradient: LinearGradient(
-                  colors: [
-                    Theme.of(context).colorScheme.surface.withOpacity(0.01),
-                    Theme.of(
-                      context,
-                    ).colorScheme.surfaceVariant.withOpacity(0.02),
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-              ),
-              child: BlocBuilder<JadwalCubit, JadwalState>(
-                builder: (context, state) {
-                  if (state.status == JadwalStatus.loading ||
-                      state.status == JadwalStatus.initial) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  if (state.tables.isEmpty) {
-                    return Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Text(
-                            'لا توجد جداول بعد',
-                            textAlign: TextAlign.center,
-                          ),
-                          const SizedBox(height: 12),
-                          ElevatedButton(
-                            onPressed: () => _createTableDialog(context, 0),
-                            child: const Text('إنشاء جدول'),
-                          ),
-                        ],
-                      ),
-                    );
-                  }
+        body: BlocBuilder<JadwalCubit, JadwalState>(
+          builder: (context, state) {
+            if (state.status == JadwalStatus.loading ||
+                state.status == JadwalStatus.initial) {
+              return const Center(child: CircularProgressIndicator());
+            }
 
-                  return ListView.builder(
-                    padding: const EdgeInsets.all(12),
-                    itemCount: state.tables.length,
-                    itemBuilder: (context, i) {
-                      final model = state.tables[i];
-                      return JadwalCard(
-                        model: model,
-                        onOpen: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (routeCtx) => BlocProvider.value(
-                                value: _cubit,
-                                child: JadwalDetailScreen(
-                                  model: model,
-                                  index: i,
-                                  onEditCell: (r, c, v) =>
-                                      _cubit.editCell(i, r, c, v),
-                                  onAddRow: () => _cubit.addRow(i),
-                                  onAddRowAt: (at) => _cubit.addRowAt(i, at),
-                                  onDeleteRow: (r) => _cubit.deleteRow(i, r),
-                                  onAddColumnAt: (c) => _cubit.addColumn(i, c),
-                                  onDeleteColumn: (c) =>
-                                      _cubit.deleteColumn(i, c),
-                                ),
+            if (state.status == JadwalStatus.failure) {
+              return Center(
+                child: Directionality(
+                  textDirection: TextDirection.rtl,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.error_outline,
+                        size: 64,
+                        color: Colors.red,
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'حدث خطأ',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        state.error ?? 'خطأ غير معروف',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 16),
+                      ElevatedButton(
+                        onPressed: () => _cubit.initialize(),
+                        child: const Text('إعادة المحاولة'),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            if (state.currentDay == null) {
+              return const Center(child: Text('لا توجد بيانات'));
+            }
+
+            return Directionality(
+              textDirection: TextDirection.rtl,
+              child: CustomScrollView(
+                slivers: [
+                  // Header with date and progress
+                  SliverToBoxAdapter(child: _buildHeader(context, state)),
+
+                  // Tasks List
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Column(
+                        children: state.currentDay!.tasks
+                            .map(
+                              (task) => TaskItemWidget(
+                                task: task,
+                                onToggle: () => _cubit.toggleTask(task.id),
                               ),
+                            )
+                            .toList(),
+                      ),
+                    ),
+                  ),
+
+                  // Save Button
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
+                      ),
+                      child: ElevatedButton.icon(
+                        onPressed: () {
+                          _cubit.saveCurrentDayToHistory();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('تم اضافة انجاز اليوم الي السجل'),
+                              behavior: SnackBarBehavior.floating,
                             ),
                           );
                         },
-                        onRename: () => _renameDialog(context, i, model.name),
-                        onDelete: () => _confirmDelete(context, i),
-                      );
-                    },
-                  );
-                },
+                        icon: const Icon(Icons.save),
+                        label: const Text('حفظ الإنجاز في السجل'),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.all(16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // Prayer Times Widget
+                  if (state.todayPrayerTimes != null)
+                    SliverToBoxAdapter(
+                      child: PrayerTimesWidget(
+                        prayerTimes: state.todayPrayerTimes!,
+                        nextPrayer: state.nextPrayer,
+                      ),
+                    ),
+
+                  // Bottom padding
+                  const SliverToBoxAdapter(child: SizedBox(height: 16)),
+                ],
               ),
-            ),
-          ),
+            );
+          },
         ),
       ),
     );
+  }
+
+  Widget _buildHeader(BuildContext context, JadwalState state) {
+    final theme = Theme.of(context);
+    final currentDay = state.currentDay!;
+
+    return Container(
+      margin: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            theme.colorScheme.primaryContainer.withOpacity(0.3),
+            theme.colorScheme.primaryContainer.withOpacity(0.1),
+          ],
+          begin: Alignment.topRight,
+          end: Alignment.bottomLeft,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: theme.colorScheme.primary.withOpacity(0.2),
+          width: 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'اليوم',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.textTheme.bodyMedium?.color?.withOpacity(
+                        0.6,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _formatDate(currentDay.date),
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+              DayColorIndicator(
+                color: currentDay.color,
+                completedCount: currentDay.completedCount,
+                totalCount: currentDay.totalCount,
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+
+          // Progress Bar
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'التقدم',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.textTheme.bodyMedium?.color?.withOpacity(0.6),
+                ),
+              ),
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: LinearProgressIndicator(
+                  value: currentDay.completedCount / currentDay.totalCount,
+                  minHeight: 8,
+                  backgroundColor: theme.colorScheme.surfaceVariant.withOpacity(
+                    0.3,
+                  ),
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    _getProgressColor(currentDay.color),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatDate(DateTime date) {
+    const weekdays = [
+      'الاثنين',
+      'الثلاثاء',
+      'الأربعاء',
+      'الخميس',
+      'الجمعة',
+      'السبت',
+      'الأحد',
+    ];
+
+    const months = [
+      'يناير',
+      'فبراير',
+      'مارس',
+      'أبريل',
+      'مايو',
+      'يونيو',
+      'يوليو',
+      'أغسطس',
+      'سبتمبر',
+      'أكتوبر',
+      'نوفمبر',
+      'ديسمبر',
+    ];
+
+    final weekday = weekdays[date.weekday - 1];
+    final month = months[date.month - 1];
+
+    return '$weekday، ${date.day} $month';
+  }
+
+  Color _getProgressColor(color) {
+    switch (color) {
+      case DayColor.green:
+        return Colors.green;
+      case DayColor.yellow:
+        return Colors.orange;
+      case DayColor.red:
+        return Colors.red;
+      default:
+        return Colors.grey;
+    }
   }
 }

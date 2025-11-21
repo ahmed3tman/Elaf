@@ -38,6 +38,12 @@ class LineMappingRepository {
     _cache = parsed;
     return parsed;
   }
+
+  /// Reset cache (useful for Hot Reload)
+  static void reset() {
+    _cache = null;
+    _loading = null;
+  }
 }
 
 // Top-level function for compute() to parse on a background isolate.
